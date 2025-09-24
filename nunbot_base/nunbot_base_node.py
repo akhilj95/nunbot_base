@@ -35,7 +35,7 @@ class NunbotBase(Node):
 
         # subscribers and publishers
         self.sub = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
-        self.mot_enc_pub = self.create_publisher(MotEncArray, '/nunbot/motors_enc', 50)
+        self.mot_enc_pub = self.create_publisher(MotEncArray, '/nunbot/motors_enc', 25)
         self.ir_dist_pub_0 = self.create_publisher(Range, '/nunbot/ir_distance_0', 10)
         self.ir_dist_pub_1 = self.create_publisher(Range, '/nunbot/ir_distance_1', 10)
         self.voltage_pub = self.create_publisher(Float32MultiArray, '/nunbot/voltage', 10)

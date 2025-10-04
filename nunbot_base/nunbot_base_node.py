@@ -110,14 +110,7 @@ class NunbotBase(Node):
             vel= list(map(float, data['VEL']))
 
             current_time = self.get_clock().now()
-
-            # dt = 0.05  # fixed 50ms interval
-            # dt = (current_time - self.last_time).nanoseconds / 1e9
-            # if dt == 0:
-            #     dt = 1e-6  # prevent div by zero
-            # self.last_time = current_time
-
-            
+  
             # Publish Motor data for sdpo_localization_odom
             mot_enc_array_msg = MotEncArray()
             mot_enc_array_msg.stamp = current_time.to_msg()
@@ -162,11 +155,14 @@ class NunbotBase(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = NunbotBase()
-    if rclpy.ok():
-        rclpy.spin(node)
-    node.ser.close()
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        if rclpy.ok():
+            rclpy.spin(node)
+    finally:
+        if hasattr(node, "ser"):
+            node.ser.close()
+        node.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

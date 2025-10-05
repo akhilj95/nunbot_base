@@ -7,6 +7,10 @@ from sdpo_drivers_interfaces.msg import MotEnc, MotEncArray
 import serial
 import math
 
+# Rpi 5 gpio
+# Run sudo apt install python3-gpiod
+# import gpiod
+
 class NunbotBase(Node):
 
     def __init__(self):
@@ -46,6 +50,21 @@ class NunbotBase(Node):
 
         # start timer to read serial data at 20 Hz
         self.create_timer(0.05, self.read_serial)
+
+        """
+        # Define GPIO pins for LEDs
+        BATTERY1_LED_PIN = 17
+        BATTERY2_LED_PIN = 27
+
+        # Initialize gpiod chip and lines
+        self.chip = gpiod.Chip('gpiochip4')
+        self.led1_line = self.chip.get_line(BATTERY1_LED_PIN)
+        self.led2_line = self.chip.get_line(BATTERY2_LED_PIN)
+
+        # Request output mode for both LEDs
+        self.led1_line.request(consumer="battery1_led", type=gpiod.LINE_REQ_DIR_OUT)
+        self.led2_line.request(consumer="battery2_led", type=gpiod.LINE_REQ_DIR_OUT)
+        """
 
     def cmd_vel_callback(self, msg):
         linear_x = msg.linear.x
@@ -145,6 +164,19 @@ class NunbotBase(Node):
             voltage_msg.data = list(map(float, data['VOL']))
             self.voltage_pub.publish(voltage_msg)
 
+            """
+            # Checking battery voltages
+            voltage1 = float(data['VOL'][0])
+            voltage2 = float(data['VOL'][1])
+
+            # Define threshold for low battery (adjust as needed)
+            LOW_VOLTAGE_THRESHOLD = 12.5  # Example threshold in volts
+
+            # Turn on LED if voltage is above threshold, off otherwise
+            self.led1_line.set_value(1 if voltage1 > LOW_VOLTAGE_THRESHOLD else 0)
+            self.led2_line.set_value(1 if voltage2 > LOW_VOLTAGE_THRESHOLD else 0)
+            """
+
             # Publish button states
             self.button_pairing_pub.publish(Bool(data=bool(int(data['BTN'][0]))))
             self.button_onoff_pub.publish(Bool(data=bool(int(data['BTN'][1]))))
@@ -161,6 +193,12 @@ def main(args=None):
     finally:
         if hasattr(node, "ser"):
             node.ser.close()
+        """
+        # closing led lines
+        if hasattr(node, led1_line):
+            node.led1_line.release()
+            node.led2_line.release()
+        """
         node.destroy_node()
         rclpy.shutdown()
 

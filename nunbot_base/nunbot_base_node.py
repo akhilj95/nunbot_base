@@ -8,8 +8,8 @@ import serial
 import math
 
 # Rpi 5 gpio
-# Run sudo apt install python3-gpiod
-# import gpiod
+# Run sudo apt install python3-libgpiod
+import gpiod
 
 class NunbotBase(Node):
 
@@ -22,12 +22,14 @@ class NunbotBase(Node):
         self.declare_parameter('max_linear_speed', 1.0)
         self.declare_parameter('max_angular_speed', 3.14)
         self.declare_parameter('ticks_per_rev', 2880.0)  # Wheel encoder counts per revolution
+        self.declare_parameter('low_voltage_threshold', 13.0)
 
         port = self.get_parameter('serial_port').get_parameter_value().string_value
         baud = self.get_parameter('baud_rate').get_parameter_value().integer_value
         self.max_linear_speed = self.get_parameter('max_linear_speed').get_parameter_value().double_value
         self.max_angular_speed = self.get_parameter('max_angular_speed').get_parameter_value().double_value
         self.ticks_per_rev = self.get_parameter('ticks_per_rev').get_parameter_value().double_value
+        self.low_voltage_threshold = self.get_parameter('low_voltage_threshold').get_parameter_value().double_value
 
         try:
             self.ser = serial.Serial(port, baud, timeout=1)
@@ -51,20 +53,40 @@ class NunbotBase(Node):
         # start timer to read serial data at 20 Hz
         self.create_timer(0.05, self.read_serial)
 
-        """
         # Define GPIO pins for LEDs
-        BATTERY1_LED_PIN = 17
-        BATTERY2_LED_PIN = 27
+        self.BATTERY1_LED_PIN = 17
+        self.BATTERY2_LED_PIN = 27
 
-        # Initialize gpiod chip and lines
-        self.chip = gpiod.Chip('gpiochip4')
-        self.led1_line = self.chip.get_line(BATTERY1_LED_PIN)
-        self.led2_line = self.chip.get_line(BATTERY2_LED_PIN)
-
-        # Request output mode for both LEDs
-        self.led1_line.request(consumer="battery1_led", type=gpiod.LINE_REQ_DIR_OUT)
-        self.led2_line.request(consumer="battery2_led", type=gpiod.LINE_REQ_DIR_OUT)
-        """
+        # Initialize GPIO with graceful degradation
+        self.led1_line = None
+        self.led2_line = None
+        GPIO_CHIP_PATH = '/dev/gpiochip4'
+        
+        try:
+            # gpiod 2.x API - request_lines function
+            self.led1_line = gpiod.request_lines(
+                GPIO_CHIP_PATH,
+                config={
+                    self.BATTERY1_LED_PIN: gpiod.LineSettings(
+                        direction=gpiod.line.Direction.OUTPUT
+                    )
+                },
+                consumer="battery1_led"
+            )
+            self.led2_line = gpiod.request_lines(
+                GPIO_CHIP_PATH,
+                config={
+                    self.BATTERY2_LED_PIN: gpiod.LineSettings(
+                        direction=gpiod.line.Direction.OUTPUT
+                    )
+                },
+                consumer="battery2_led"
+            )          
+            self.get_logger().info("GPIO initialized successfully for battery LEDs")
+        except Exception as e:
+            self.get_logger().warning(f"GPIO initialization failed: {e}. LED control disabled, continuing without GPIO.")
+            self.led1_line = None
+            self.led2_line = None
 
     def cmd_vel_callback(self, msg):
         linear_x = msg.linear.x
@@ -118,8 +140,11 @@ class NunbotBase(Node):
                 data[key] = vals.split(',')
 
             # Now check if 'DEN' key is actually present before parsing values
-            if 'DEN' not in data:
-                self.get_logger().warning(f"Missing 'DEN' key in line, skipping: {line}")
+            # Add validation for all required keys
+            required_keys = ['DEN', 'VEL', 'IRD', 'VOL', 'BTN']
+            missing_keys = [k for k in required_keys if k not in data]
+            if missing_keys:
+                self.get_logger().warning(f"Missing keys {missing_keys} in line: {line}")
                 return
 
             # Parse delta encoder values
@@ -164,18 +189,21 @@ class NunbotBase(Node):
             voltage_msg.data = list(map(float, data['VOL']))
             self.voltage_pub.publish(voltage_msg)
 
-            """
             # Checking battery voltages
             voltage1 = float(data['VOL'][0])
             voltage2 = float(data['VOL'][1])
 
-            # Define threshold for low battery (adjust as needed)
-            LOW_VOLTAGE_THRESHOLD = 12.5  # Example threshold in volts
-
-            # Turn on LED if voltage is above threshold, off otherwise
-            self.led1_line.set_value(1 if voltage1 > LOW_VOLTAGE_THRESHOLD else 0)
-            self.led2_line.set_value(1 if voltage2 > LOW_VOLTAGE_THRESHOLD else 0)
-            """
+            # Turn on LED if voltage is above threshold (only if GPIO is available)
+            if self.led1_line is not None and self.led2_line is not None:
+                self.led1_line.set_value(
+                    self.BATTERY1_LED_PIN, 
+                    gpiod.line.Value(1) if voltage1 < self.low_voltage_threshold else gpiod.line.Value(0)
+                )
+                self.led2_line.set_value(
+                    self.BATTERY2_LED_PIN, 
+                    gpiod.line.Value(1) if voltage2 < self.low_voltage_threshold else gpiod.line.Value(0)
+                )
+                # self.get_logger().info(f"Voltages: {voltage1} {voltage2}")
 
             # Publish button states
             self.button_pairing_pub.publish(Bool(data=bool(int(data['BTN'][0]))))
@@ -191,14 +219,22 @@ def main(args=None):
         if rclpy.ok():
             rclpy.spin(node)
     finally:
-        if hasattr(node, "ser"):
+        if hasattr(node, "ser") and node.ser:
             node.ser.close()
-        """
-        # closing led lines
-        if hasattr(node, led1_line):
-            node.led1_line.release()
-            node.led2_line.release()
-        """
+        
+        # Release GPIO lines individually
+        if hasattr(node, "led1_line") and node.led1_line is not None:
+            try:
+                node.led1_line.release()
+            except Exception as e:
+                node.get_logger().warning(f"Error releasing LED1: {e}")
+        
+        if hasattr(node, "led2_line") and node.led2_line is not None:
+            try:
+                node.led2_line.release()
+            except Exception as e:
+                node.get_logger().warning(f"Error releasing LED2: {e}")
+
         node.destroy_node()
         rclpy.shutdown()
 

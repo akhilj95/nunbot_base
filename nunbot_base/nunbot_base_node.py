@@ -6,6 +6,7 @@ from sensor_msgs.msg import Range
 from sdpo_drivers_interfaces.msg import MotEnc, MotEncArray
 import serial
 import math
+from collections import deque
 
 # Rpi 5 gpio
 # Run sudo apt install python3-libgpiod
@@ -22,14 +23,15 @@ class NunbotBase(Node):
         self.declare_parameter('max_linear_speed', 1.0)
         self.declare_parameter('max_angular_speed', 3.14)
         self.declare_parameter('ticks_per_rev', 2880.0)  # Wheel encoder counts per revolution
-        self.declare_parameter('low_voltage_threshold', 13.0)
 
         port = self.get_parameter('serial_port').get_parameter_value().string_value
         baud = self.get_parameter('baud_rate').get_parameter_value().integer_value
         self.max_linear_speed = self.get_parameter('max_linear_speed').get_parameter_value().double_value
         self.max_angular_speed = self.get_parameter('max_angular_speed').get_parameter_value().double_value
         self.ticks_per_rev = self.get_parameter('ticks_per_rev').get_parameter_value().double_value
-        self.low_voltage_threshold = self.get_parameter('low_voltage_threshold').get_parameter_value().double_value
+
+        # LOW Voltage threshold for batteries
+        self.low_voltage_threshold = 13  # Volts
 
         try:
             self.ser = serial.Serial(port, baud, timeout=1)
@@ -52,6 +54,14 @@ class NunbotBase(Node):
 
         # start timer to read serial data at 20 Hz
         self.create_timer(0.05, self.read_serial)
+
+        # Voltage smoothing
+        window_len = 6
+        # buffer initialized with battery nominal volatage to be safe
+        self.voltage_buffers = [
+            deque([14.8] * window_len, maxlen=window_len),
+            deque([14.8] * window_len, maxlen=window_len)
+        ]
 
         # Define GPIO pins for LEDs
         self.BATTERY1_LED_PIN = 17
@@ -162,7 +172,7 @@ class NunbotBase(Node):
 
             for i in range(3):
                 mot_enc_msg = MotEnc()
-                mot_enc_msg.enc_delta = int(deltaEnc[i])    # or float(deltaEnc[i]) if float32/int32 mismatch
+                mot_enc_msg.enc_delta = int(deltaEnc[i])
                 mot_enc_msg.ticks_per_rev = self.ticks_per_rev
                 mot_enc_msg.ang_speed = vel[i]
                 mot_enc_array_msg.mot_enc.append(mot_enc_msg)
@@ -184,26 +194,34 @@ class NunbotBase(Node):
                 else:
                     self.ir_dist_pub_1.publish(dist_msg)
 
-            # Publish voltage readings
-            voltage_msg = Float32MultiArray()
-            voltage_msg.data = list(map(float, data['VOL']))
-            self.voltage_pub.publish(voltage_msg)
-
             # Checking battery voltages
             voltage1 = float(data['VOL'][0])
             voltage2 = float(data['VOL'][1])
+
+            self.voltage_buffers[0].append(voltage1)
+            self.voltage_buffers[1].append(voltage2)
+
+            smoothed_voltage = [
+                sum(self.voltage_buffers[0]) / len(self.voltage_buffers[0]),
+                sum(self.voltage_buffers[1]) / len(self.voltage_buffers[1])
+            ]
+
+            # Publish voltage readings
+            voltage_msg = Float32MultiArray()
+            voltage_msg.data = smoothed_voltage
+            self.voltage_pub.publish(voltage_msg)
 
             # Turn on LED if voltage is above threshold (only if GPIO is available)
             if self.led1_line is not None and self.led2_line is not None:
                 self.led1_line.set_value(
                     self.BATTERY1_LED_PIN, 
-                    gpiod.line.Value(1) if voltage1 < self.low_voltage_threshold else gpiod.line.Value(0)
+                    gpiod.line.Value(1) if smoothed_voltage[0] < self.low_voltage_threshold else gpiod.line.Value(0)
                 )
                 self.led2_line.set_value(
                     self.BATTERY2_LED_PIN, 
-                    gpiod.line.Value(1) if voltage2 < self.low_voltage_threshold else gpiod.line.Value(0)
+                    gpiod.line.Value(1) if smoothed_voltage[1] < self.low_voltage_threshold else gpiod.line.Value(0)
                 )
-                # self.get_logger().info(f"Voltages: {voltage1} {voltage2}")
+                # self.get_logger().info(f"Voltages: {smoothed_voltage[0]} {smoothed_voltage[1]}")
 
             # Publish button states
             self.button_pairing_pub.publish(Bool(data=bool(int(data['BTN'][0]))))

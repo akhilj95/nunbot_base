@@ -31,7 +31,7 @@ class NunbotBase(Node):
         self.ticks_per_rev = self.get_parameter('ticks_per_rev').get_parameter_value().double_value
 
         # LOW Voltage threshold for batteries
-        self.low_voltage_threshold = 14.2  # Volts
+        self.low_voltage_threshold = 14.5  # Volts
 
         try:
             self.ser = serial.Serial(port, baud, timeout=1)
